@@ -47,6 +47,15 @@ This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License.
 
+*******************************************
+July 2018
+Modified by Prithvi to make Lepton 3 capture on a GPIO input
+As pigpio is used, use the command below to compile
+gcc -Wall -pthread -o output capture.c -lpigpio -lrt
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free
  */
 
 
@@ -62,7 +71,9 @@ the Free Software Foundation; either version 2 of the License.
 #include <limits.h>
 #include <string.h>
 #include <time.h>
+#include <pigpio.h>
 
+#define SENSEPI_PIN	19
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 static void pabort(const char *s)
@@ -71,7 +82,7 @@ static void pabort(const char *s)
     abort();
 }
 
-static const char *device = "/dev/spidev0.1";
+static const char *device = "/dev/spidev0.0";
 static uint8_t mode = SPI_CPOL | SPI_CPHA;
 static uint8_t bits = 8;
 static uint32_t speed = 16000000;
@@ -87,17 +98,36 @@ int8_t last_packet = -1;
 static uint8_t rx_buf[LEP_SPI_BUFFER] = {0};
 static unsigned int lepton_image[240][80];
 
+static void convert_to_png(char *image_name) 
+{
+  //fork a process and run the convert to png in there.
+
+  pid_t pid;
+	fprintf(stderr, "converting img %s\n", image_name);
+  pid = fork();
+  if (pid < 0) {
+   perror("fork");
+   return;
+  }
+  if (pid == 0) {
+    execlp("convert", "convert", image_name, "/home/pi/Lepton3/capture/images/final.png", NULL); 
+    fprintf(stderr, "converted the pgm to png\n");
+    return;
+  }
+
+}
+    
 static void save_pgm_file(void)
 {
     int i;
     int j;
     unsigned int maxval = 0;
     unsigned int minval = UINT_MAX;
-    char image_name[32];
+    char image_name[255];
     int image_index = 0;
 
     do {
-        sprintf(image_name, "images/IMG_%.4d.pgm", image_index);
+        sprintf(image_name, "/home/pi/Lepton3/capture/images/IMG_%.4d.pgm", image_index);
         image_index += 1;
         if (image_index > 9999) 
         {
@@ -107,6 +137,7 @@ static void save_pgm_file(void)
 
     } while (access(image_name, F_OK) == 0);
 
+	fprintf(stderr, "000 wiriting img %s\n", image_name);
     FILE *f = fopen(image_name, "w+");
     if (f == NULL)
     {
@@ -153,6 +184,9 @@ static void save_pgm_file(void)
 
     //launch image viewer
     //execlp("gpicview", image_name, NULL);
+    //pnarasim : convert to png so it can be viewed in the browser
+	fprintf(stderr, "000 converting img %s\n", image_name);
+    convert_to_png(image_name);
 }
 
 int transfer(int fd)
@@ -177,6 +211,7 @@ int transfer(int fd)
     };    
     
     ret = ioctl(fd, SPI_IOC_MESSAGE(1), &tr);
+    printf("ret val %d\n", ret);
     if (ret < 1) {
         pabort("can't read spi data");
     }
@@ -228,11 +263,13 @@ int transfer(int fd)
     
     return status_bits;
 }
- 
-int main(int argc, char *argv[])
+
+int initSPI_capture(void)
 {
     int ret = 0;
     int fd;
+
+    gpioWrite(16, 1);
 
     fd = open(device, O_RDWR);
     if (fd < 0)
@@ -280,11 +317,45 @@ int main(int argc, char *argv[])
     printf("bits per word: %d\n", bits);
     printf("max speed: %d Hz (%d KHz)\n", speed, speed/1000);
 
+    status_bits = 0;
+
     while(status_bits != 0x0f) { transfer(fd); }
 
     close(fd);
+    
+    gpioWrite(16, 0);
 
     save_pgm_file();
 
     return ret;
+}
+ 
+int main(int argc, char *argv[])
+{
+   gpioInitialise();
+
+   gpioSetMode(SENSEPI_PIN, PI_INPUT);
+   gpioSetPullUpDown(SENSEPI_PIN, PI_PUD_UP);
+   
+   gpioSetMode(16, PI_OUTPUT);
+   gpioWrite(16, 0);
+   
+   struct timespec sleep_time =
+   {
+      .tv_sec  = 0,
+      .tv_nsec = 200000000L	// 0.1 sec
+   };
+   
+   while(1)
+   {
+      nanosleep(&sleep_time, NULL);
+      printf("GPIO %d\n", gpioRead(SENSEPI_PIN));
+      if(0 == gpioRead(SENSEPI_PIN))
+      {
+      	initSPI_capture();
+      }
+   }
+
+   
+   return 0;
 }
